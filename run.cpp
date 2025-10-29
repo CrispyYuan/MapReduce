@@ -69,4 +69,69 @@ int main() {
 
     std::cout << "--- MapReduce 平台启动 ---" << std::endl;
     std::cout << "总共 " << input_data.size() << " 个输入分片。" << std::endl;
-    std::cout << "
+    std::cout << "-----------------------------------" << std::endl;
+
+    // 2. Map 阶段 (并行执行)
+    
+    // 这个 vector 用来存储所有 Map 线程的中间输出
+    std::vector<std::unordered_map<std::string, int>> map_results;
+    
+    // 这个 vector 用来管理所有的 Map 线程
+    std::vector<std::thread> map_threads;
+
+    // 互斥锁 (Mutex)，用来保护 'map_results'。
+    // 因为多个线程会同时尝试写入它，我们需要一个锁来防止数据竞争。
+    std::mutex mtx; 
+
+    std::cout << "--- 正在并行执行 Map 阶段... ---" << std::endl;
+
+    for (const auto& chunk : input_data) {
+        // emplace_back: 创建一个新线程并立即开始执行
+        map_threads.emplace_back(
+            // C++ Lambda 表达式，定义了线程要执行的工作
+            [&, chunk]() { // 捕获 mtx, map_results 的引用，并拷贝 chunk
+                
+                // 2.1 每个线程独立执行 MapFunction
+                std::unordered_map<std::string, int> single_map_result = mapFunction(chunk);
+
+                // 2.2 线程需要安全地将结果写入共享的 map_results
+                // std::lock_guard 会在创建时自动锁定 mtx，
+                // 并在该函数块结束时自动解锁 mtx (即使发生异常)。
+                std::lock_guard<std::mutex> lock(mtx);
+                
+                // (--- 锁定的临界区 ---)
+                map_results.push_back(single_map_result);
+                // (--- 锁自动释放 ---)
+            }
+        );
+    }
+
+    // 2.3 等待所有 Map 线程执行完毕
+    // "Join" 操作会阻塞主线程，直到对应的子线程完成工作。
+    for (auto& t : map_threads) {
+        t.join();
+    }
+
+    std::cout << "--- Map 阶段完成。收集到 " << map_results.size() << " 份中间结果。---" << std::endl;
+    std::cout << "-----------------------------------" << std::endl;
+
+
+    // 3. Reduce 阶段 (汇总)
+    // MapReduce 框架中的 "Shuffle and Sort" 阶段在这里被简化了。
+    // 我们直接将所有 Map 的输出 (一个 vector) 传递给 Reduce 函数。
+    std::cout << "--- 正在执行 Reduce 阶段... ---" << std::endl;
+    
+    std::unordered_map<std::string, int> final_result = reduceFunction(map_results);
+
+    std::cout << "--- Reduce 阶段完成。 ---" << std::endl;
+    std::cout << "-----------------------------------" << std::endl;
+
+
+    // 4. 打印最终结果
+    std::cout << "最终单词统计 (WordCount) 结果:" << std::endl;
+    for (const auto& kv_pair : final_result) {
+        std::cout << "  '" << kv_pair.first << "': " << kv_pair.second << std::endl;
+    }
+
+    return 0;
+}
