@@ -1,76 +1,72 @@
-#include "mapreduce/mapreduce.h"
+#include <iostream>
+#include <vector>
+#include <string>
+#include <unordered_map> // 哈希表，用于存储 (word, count)
+#include <thread>        // 用于并行的 Map 任务
+#include <mutex>         // 用于保护共享的 map_results
+#include <sstream>       // 用于字符串流 (分割单词)
+#include <algorithm>     // 用于 std::transform (转小写) 和 std::remove_if (去标点)
+#include <cctype>        // 用于 ::tolower 和 ::ispunct
 
-// map function to count words
-class WordCounter :public Mapper
-{
-    public:
-        virtual void Map(const MapInput& input)
-        {
-            const string& text = input.value();
-            const int n = text.size();
-            for(int i = 0; i<n; ){
-                //跳过前导空白
-                while(i<n && isspace(text[i])) i++;
-                //找到词尾
-                int start = i;
-                while(i<n && !isspace(text[i])) i++;
-                if(start < i){
-                    string word = text.substr(start, i - start);
-                    Emit(word, "1");
-                }
-            }
+/**
+ * @brief Map函数：将字符串分割成单词，并统计每个单词的出现次数
+ * (来自你的 mapreduce.h 文件，并稍作增强以处理标点符号)
+ */
+std::unordered_map<std::string, int> mapFunction(const std::string& input) {
+    std::unordered_map<std::string, int> wordCount;
+    std::istringstream iss(input);
+    std::string word;
+    
+    while (iss >> word) {
+        // 1. 移除所有标点符号
+        word.erase(std::remove_if(word.begin(), word.end(), 
+            [](unsigned char c) { return std::ispunct(c); }), word.end());
+
+        // 2. 转换为小写
+        std::transform(word.begin(), word.end(), word.begin(),
+            [](unsigned char c) { return std::tolower(c); });
+
+        // 3. 统计 (忽略空字符串)
+        if (!word.empty()) {
+            wordCount[word]++;
         }
-};
-REGISTER_MAPPER(WordCounter);
-
-// reduce function to sum word counts
-class Adder : public Reducer
-{
-    virtual void Reduce(ReduceInput* input){
-        int64_value = 0;
-        while(!input->Done()){
-            value += StringToInt(input->value());
-            input->NextValue();
-        }
-        Emit(IntToString(value));
     }
-};
-REGISTER_REDUCER(Adder);
-
-int main(int argc, char** argv){
-    ParseCommandLineFlags(argc, argv);
-    MapReduceSpecification spec;
-
-    // 把输入文件添加到spec中
-    for (int i = 1; i < argc; i++) {
-        MapReduceInput* input = spec.add_input();
-        input->set_format("text");
-        input->set_filepattern(argv[i]);
-        input->set_mapper_class("WordCounter");
-    }
-
-    // 指定输出文件：
-    // /gfs/test/freq-00000-of-00100
-    // /gfs/test/freq-00001-of-00100
-    // ...
-    MapReduceOutput* out = spec.output();
-    out->set_filebase("/gfs/test/freq");
-    out->set_num_tasks(100);
-    out->set_format("text");
-    out->set_reducer_class("Adder");
-
-    //  可选操作:在map任务中做部分累加工作，以便节省带宽
-    /*out->set_combiner_class("Adder");*/
-
-    // 调整参数: 使用2000台机器，每个任务100MB内存
-    spec.set_machines(2000);
-    spec.set_map_megabytes(100);
-    spec.set_reduce_megabytes(100);
-
-    // Now run it
-    MapReduceResult result;
-    if (!MapReduce(spec, &result)) abort();
-
-    // 完成: 'result'结构包含计数、花费时间和使用机器的信息
-    return 0;
+    return wordCount;
 }
+
+/**
+ * @brief Reduce函数：合并多个Map的输出结果
+ * (来自你的 mapreduce.h 文件)
+ */
+std::unordered_map<std::string, int> reduceFunction(
+    const std::vector<std::unordered_map<std::string, int>>& intermediate_maps
+) {
+    std::unordered_map<std::string, int> final_result;
+    for (const auto& map : intermediate_maps) {
+        for (const auto& kv_pair : map) {
+            // kv_pair.first 是单词 (key)
+            // kv_pair.second 是次数 (value)
+            final_result[kv_pair.first] += kv_pair.second;
+        }
+    }
+    return final_result;
+}
+
+// -----------------------------------------------------------------
+//                   MapReduce 驱动程序 (主平台)
+// -----------------------------------------------------------------
+int main() {
+    
+    // 1. 准备输入数据 (模拟被分割的数据块/文件)
+    // 真实的 MapReduce 框架会从分布式文件系统 (如 HDFS) 读取文件并自动分片。
+    // 在这里，我们用一个 vector<string> 来模拟这些"分片"。
+    std::vector<std::string> input_data = {
+        "Hello world, this is MapReduce!",
+        "MapReduce is a simple programming model.",
+        "This model is used for processing... and generating large data sets.",
+        "Hello MapReduce, hello C++ world."
+    };
+
+    std::cout << "--- MapReduce 平台启动 ---" << std::endl;
+    std::cout << "总共 " << input_data.size() << " 个输入分片。" << std::endl;
+    std::cout << "
